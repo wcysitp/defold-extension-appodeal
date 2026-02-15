@@ -1,0 +1,35 @@
+name: "Appodeal"
+
+platforms:
+    armv7-android:
+        context:
+            env:
+                - APP_APPODEAL_SDK_VERSION=4.0.0
+        bundle:
+            resources:
+                - "manifests/android/AndroidManifest.xml"
+                - "manifests/android/build.gradle"
+                - "manifests/android/proguard-rules.pro"
+                - "manifests/android/res"
+
+    arm64-android:
+        context:
+            env:
+                - APP_APPODEAL_SDK_VERSION=4.0.0
+        bundle:
+            resources:
+                - "manifests/android/AndroidManifest.xml"
+                - "manifests/android/build.gradle"
+                - "manifests/android/proguard-rules.pro"
+                - "manifests/android/res"
+
+    x86_64-android:
+        context:
+            env:
+                - APP_APPODEAL_SDK_VERSION=4.0.0
+        bundle:
+            resources:
+                - "manifests/android/AndroidManifest.xml"
+                - "manifests/android/build.gradle"
+                - "manifests/android/proguard-rules.pro"
+                - "manifests/android/res"

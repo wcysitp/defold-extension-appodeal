@@ -1,0 +1,3 @@
+-keep class com.defold.appodeal.AppodealBridge { *; }
+-keep class com.appodeal.ads.** { *; }
+-dontwarn com.appodeal.ads.**

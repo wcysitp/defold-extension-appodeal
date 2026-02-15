@@ -1,0 +1,16 @@
+local sample = require "example.appodeal_sample"
+
+local APP_KEY = "YOUR_APPODEAL_APP_KEY"
+
+function init(self)
+    msg.post(".", "acquire_input_focus")
+    sample.init(APP_KEY)
+end
+
+function on_input(self, action_id, action)
+    if action_id == hash("show_interstitial") and action.pressed then
+        sample.show_interstitial()
+    elseif action_id == hash("show_rewarded") and action.pressed then
+        sample.show_rewarded()
+    end
+end

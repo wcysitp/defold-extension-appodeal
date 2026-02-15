@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:networkSecurityConfig="@xml/defold_appodeal_network_security_config"
+        tools:replace="android:networkSecurityConfig">
+        <!--
+            Optional if you use the AdMob adapter:
+            <meta-data
+                android:name="com.google.android.gms.ads.APPLICATION_ID"
+                android:value="ca-app-pub-XXXXXXXXXXXXXXXX~YYYYYYYYYY" />
+        -->
+    </application>
+</manifest>

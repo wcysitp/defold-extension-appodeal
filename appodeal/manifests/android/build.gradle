@@ -1,0 +1,12 @@
+apply from: "$DYNAMO_HOME/ext/share/java/build.gradle"
+
+repositories {
+    google()
+    mavenCentral()
+    maven { url "https://artifactory.appodeal.com/appodeal" }
+    maven { url "https://artifactory.appodeal.com/appodeal-public" }
+}
+
+dependencies {
+    implementation "com.appodeal.ads.sdk:core:$APP_APPODEAL_SDK_VERSION"
+}
