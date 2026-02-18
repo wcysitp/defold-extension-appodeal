@@ -1,6 +1,6 @@
 # defold-extension-appodeal
 
-Android-only Defold Native Extension для Appodeal Ads с минимальным Lua API:
+Android-only Defold Native Extension for Appodeal Ads with minimal Lua API:
 
 - `init(params, callback)`
 - `is_interstitial_available() -> bool`
@@ -8,28 +8,27 @@ Android-only Defold Native Extension для Appodeal Ads с минимальны
 - `is_rewarded_available() -> bool`
 - `show_rewarded(callback)`
 
-Репозиторий создан как отдельный extension-проект, без привязки к конкретной игре.
-
-## Текущий стек (на 15 февраля 2026)
+## Current stack (February 2026)
 
 - Appodeal Android SDK: `4.0.0`
-- Режим extension по умолчанию: `core-only` (без `admob` и других adapters)
-- Android minSdk: `23+` (требование Appodeal 4.0.0)
+- Android `minSdk 23+`
+- Default setup is **not core-only anymore**.
+- Included Appodeal-account adapters:
+  - `amazon:11.1.1.0`
+  - `applovin:13.5.1.0`
+  - `bigo_ads:5.6.2.0`
+  - `dt_exchange:8.4.1.0`
+  - `inmobi:11.1.0.0`
+  - `ironsource:9.1.0.0`
+  - `mintegral:17.0.31.0`
+  - `my_target:5.27.4.0` (VK Ads path)
+  - `unity_ads:4.16.4.0`
+  - `vungle:7.6.1.0`
+  - `yandex:7.18.2.0`
 
-Версии зафиксированы в `appodeal/ext.manifest` через env-переменные для воспроизводимых билдов.
+AdMob is optional and **not required** for this default account-driven setup.
 
-## Настройка адаптеров
-
-Сейчас extension включает только `com.appodeal.ads.sdk:core`.
-Это стартовый вариант "чисто Appodeal" без обязательной настройки AdMob.
-Если позже понадобятся конкретные mediated сети, добавь их adapters в:
-
-- `appodeal/ext.manifest` (env-версии)
-- `appodeal/manifests/android/build.gradle` (`implementation "com.appodeal.ads.sdk.adapters:...`)
-
-Координаты/версии adapters нужно брать из актуальной Appodeal Android документации или их Maven/Artifactory.
-
-## Структура
+## Repository structure
 
 - `appodeal/ext.manifest`
 - `appodeal/src/appodeal.cpp`
@@ -42,170 +41,121 @@ Android-only Defold Native Extension для Appodeal Ads с минимальны
 - `example/provider_adapter.lua`
 - `example/main.script`
 
-## Подключение в игру (game.project)
+## Add extension to game.project
 
-1. Добавь dependency на этот репозиторий:
+Use release tag zip:
 
 ```ini
 [project]
-dependencies = https://github.com/<your-org>/defold-extension-appodeal/archive/refs/heads/main.zip
+dependencies = https://github.com/wcysitp/defold-extension-appodeal/archive/refs/tags/v0.1.2.zip
 ```
 
-2. Вставь свой Appodeal App Key в код вызова `appodeal.init`.
-
-3. Если позже добавишь AdMob adapter вручную, добавь `APPLICATION_ID` в Android manifest игры (или в кастомный app manifest):
-
-```xml
-<meta-data
-    android:name="com.google.android.gms.ads.APPLICATION_ID"
-    android:value="ca-app-pub-XXXXXXXXXXXXXXXX~YYYYYYYYYY" />
-```
-
-4. Собери Android bundle из Defold Editor/Bob.
+After new release, replace tag version (for example `v0.1.3`).
 
 ## Lua API
 
 ### init(params, callback)
 
 `params`:
-- `app_key` (string, required)
-- `testing` (boolean, optional, default `false`)
-- `log_level` (string, optional: `"none" | "verbose" | "debug"`, default `"none"`)
+- `app_key` (required string)
+- `testing` (optional boolean, default `false`)
+- `log_level` (optional string: `"none" | "verbose" | "debug"`, default `"none"`)
 
 `callback(event)`:
 - `event.success` (boolean)
-- `event.event` (`"initialized"` или `"init_failed"`)
-- `event.error` (string, optional)
+- `event.event` (`initialized` or `init_failed`)
+- `event.error` (optional string)
 
 ### is_interstitial_available()
 
-Возвращает `true`, если interstitial загружен и доступен.
+Returns `true` if interstitial is loaded.
 
 ### show_interstitial(callback)
 
-`callback(event)` вызывается с полями:
-- `event.success` (boolean)
-- `event.ad_type == "interstitial"`
-- `event.event`:
-  - `"loaded"`
-  - `"failed_to_load"`
-  - `"shown"`
-  - `"clicked"`
-  - `"closed"`
-  - `"show_failed"`
-  - `"expired"`
-- `event.error` (string, optional)
+Callback events:
+- `loaded`
+- `failed_to_load`
+- `shown`
+- `clicked`
+- `closed`
+- `show_failed`
+- `expired`
 
-Терминальные события для `show_interstitial`: `show_failed`, `closed`, `expired`.
+Terminal events:
+- `show_failed`, `closed`, `expired`
 
 ### is_rewarded_available()
 
-Возвращает `true`, если rewarded загружен и доступен.
+Returns `true` if rewarded is loaded.
 
 ### show_rewarded(callback)
 
-`callback(event)` вызывается с полями:
-- `event.success` (boolean)
-- `event.ad_type == "rewarded"`
-- `event.event`:
-  - `"loaded"`
-  - `"failed_to_load"`
-  - `"shown"`
-  - `"clicked"`
-  - `"reward"`
-  - `"closed"`
-  - `"show_failed"`
-  - `"expired"`
-- `event.error` (string, optional)
-- `event.rewarded` (boolean, для rewarded событий)
-- `event.amount` (number, только для `reward`)
-- `event.currency` (string, только для `reward`)
+Callback events:
+- `loaded`
+- `failed_to_load`
+- `shown`
+- `clicked`
+- `reward`
+- `closed`
+- `show_failed`
+- `expired`
 
-Терминальные события для `show_rewarded`: `show_failed`, `closed`, `expired`.
+Extra rewarded fields:
+- `event.rewarded` (boolean)
+- `event.amount` (number on `reward`)
+- `event.currency` (string on `reward`)
 
-## Пример использования
+## Java diagnostics logs
 
-См. `example/appodeal_sample.lua`.
+`AppodealBridge` logs use tag:
 
-Минимально:
+- `DefoldAppodeal`
 
-```lua
-local appodeal = require "appodeal"
-
-appodeal.init({
-    app_key = "YOUR_APPODEAL_APP_KEY",
-    testing = true,
-    log_level = "verbose",
-}, function(event)
-    pprint(event)
-end)
-
-if appodeal.is_interstitial_available() then
-    appodeal.show_interstitial(function(event)
-        pprint(event)
-    end)
-end
-```
-
-## Совместимость с provider-слоем
-
-См. `example/provider_adapter.lua`:
-- `init`
-- `is_fullscreen_available`
-- `show_interstitial`
-- `show_rewarded`
-- `is_rewarded_available`
+Important points logged:
+- `initialize called`
+- `initialize success` / `initialize failed`
+- `showInterstitial: canShow=true` / `interstitial_not_available`
+- `showRewarded: canShow=true` / `rewarded_not_available`
+- callbacks for load/show failures and reward finish
 
 ## Troubleshooting
 
-### 1) `Could not resolve com.appodeal...`
+### Could not resolve Appodeal dependencies
 
-Проверь, что в Android Gradle подключены репозитории:
+Make sure these repositories are available in Gradle:
 - `https://artifactory.appodeal.com/appodeal`
 - `https://artifactory.appodeal.com/appodeal-public`
 - `mavenCentral()`
 - `google()`
 
-В extension это уже сделано в `appodeal/manifests/android/build.gradle`.
+Already configured in `appodeal/manifests/android/build.gradle`.
 
-### 2) Добавил AdMob adapter и получил ошибку про `APPLICATION_ID`
+### R8/ProGuard issues
 
-Тогда добавь meta-data `com.google.android.gms.ads.APPLICATION_ID` в manifest приложения.
+See `appodeal/manifests/android/proguard-rules.pro`.
 
-### 3) R8/ProGuard вырезает классы
+### No ad shown after button press
 
-В extension добавлены keep-rules: `appodeal/manifests/android/proguard-rules.pro`.
-Если у проекта есть свои override-правила, проверь, что keep для `com.appodeal.ads.**` и `com.defold.appodeal.AppodealBridge` не удален.
+1. Verify game uses latest plugin tag.
+2. `Project -> Fetch Libraries`.
+3. Rebuild APK.
+4. Check logs:
+   - Lua-side logs
+   - `DefoldAppodeal` Java logs via `adb logcat`
 
-### 4) Ошибки сети / cleartext
+## Validation checklist
 
-В extension добавлен `network_security_config`:
-`appodeal/manifests/android/res/xml/defold_appodeal_network_security_config.xml`.
+1. `testing = true`
+2. `log_level = "verbose"`
+3. Expect init callback: `initialized`
+4. For interstitial/rewarded expect either:
+   - `loaded -> shown -> closed`
+   - or `failed_to_load/show_failed` with reason
 
-### 5) minSdk/targetSdk/Gradle
+## Sources
 
-- Appodeal 4.0.0 требует `minSdk 23+`.
-- Для публикации в Google Play используй актуальный targetSdk (для Defold 1.12.1 это `36`, проверь требования Play Console на дату релиза).
-- Используй актуальную Defold-версию, чтобы Android toolchain/Gradle в билде были современными.
-
-## Чеклист проверки на реальном Android устройстве
-
-1. Собрать Android bundle с extension.
-2. Установить сборку на физическое устройство.
-3. Включить `testing = true`.
-4. Вызвать `init` и получить callback `initialized`.
-5. Дождаться доступности interstitial (`is_interstitial_available() == true`).
-6. Показать interstitial, проверить `shown -> closed` (или `show_failed` с причиной).
-7. Дождаться доступности rewarded (`is_rewarded_available() == true`).
-8. Показать rewarded, проверить цепочку `shown -> reward -> closed` и корректные поля `amount/currency/rewarded`.
-9. Проверить повторные показы (несколько циклов), чтобы callbacks не терялись.
-10. Проверить поведение при сворачивании/возврате приложения.
-
-## Официальные источники
-
-- Defold Native Extensions overview: https://defold.com/manuals/extensions/
-- Defold extension manifests: https://defold.com/manuals/extensions-ext-manifests/
-- Appodeal Android get started: https://docs.appodeal.com/android/get-started
-- Appodeal Android interstitial callbacks: https://docs.appodeal.com/android/ad-types/interstitial
-- Appodeal Android rewarded callbacks: https://docs.appodeal.com/android/ad-types/rewarded-video
-- Appodeal Android migration to 4.0.0: https://docs.appodeal.com/android/advanced/upgrade-guide
+- Defold extensions manual: https://defold.com/manuals/extensions/
+- Defold ext.manifest manual: https://defold.com/manuals/extensions-ext-manifests/
+- Appodeal Android docs: https://docs.appodeal.com/android/get-started
+- Appodeal interstitial docs: https://docs.appodeal.com/android/ad-types/interstitial
+- Appodeal rewarded docs: https://docs.appodeal.com/android/ad-types/rewarded-video

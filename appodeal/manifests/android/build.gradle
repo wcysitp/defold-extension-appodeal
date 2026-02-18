@@ -9,4 +9,15 @@ repositories {
 
 dependencies {
     implementation "com.appodeal.ads.sdk:core:$APP_APPODEAL_SDK_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:amazon:$APP_APPODEAL_ADAPTER_AMAZON_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:applovin:$APP_APPODEAL_ADAPTER_APPLOVIN_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:bigo_ads:$APP_APPODEAL_ADAPTER_BIGO_ADS_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:dt_exchange:$APP_APPODEAL_ADAPTER_DT_EXCHANGE_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:inmobi:$APP_APPODEAL_ADAPTER_INMOBI_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:ironsource:$APP_APPODEAL_ADAPTER_IRONSOURCE_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:mintegral:$APP_APPODEAL_ADAPTER_MINTEGRAL_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:my_target:$APP_APPODEAL_ADAPTER_MY_TARGET_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:unity_ads:$APP_APPODEAL_ADAPTER_UNITYADS_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:vungle:$APP_APPODEAL_ADAPTER_VUNGLE_VERSION"
+    implementation "com.appodeal.ads.sdk.adapters:yandex:$APP_APPODEAL_ADAPTER_YANDEX_VERSION"
 }
