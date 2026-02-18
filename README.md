@@ -43,14 +43,14 @@ AdMob is optional and **not required** for this default account-driven setup.
 
 ## Add extension to game.project
 
-Use release tag zip:
+Use branch zip (always latest `master`):
 
 ```ini
 [project]
-dependencies = https://github.com/wcysitp/defold-extension-appodeal/archive/refs/tags/v0.1.2.zip
+dependencies = https://github.com/wcysitp/defold-extension-appodeal/archive/refs/heads/master.zip
 ```
 
-After new release, replace tag version (for example `v0.1.3`).
+This format does not require tag updates in game project.
 
 ## Lua API
 
@@ -136,7 +136,7 @@ See `appodeal/manifests/android/proguard-rules.pro`.
 
 ### No ad shown after button press
 
-1. Verify game uses latest plugin tag.
+1. Verify game uses latest plugin branch zip.
 2. `Project -> Fetch Libraries`.
 3. Rebuild APK.
 4. Check logs:

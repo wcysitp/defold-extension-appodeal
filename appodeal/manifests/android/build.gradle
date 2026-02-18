@@ -1,5 +1,3 @@
-apply from: "$DYNAMO_HOME/ext/share/java/build.gradle"
-
 repositories {
     google()
     mavenCentral()
@@ -8,16 +6,32 @@ repositories {
 }
 
 dependencies {
-    implementation "com.appodeal.ads.sdk:core:$APP_APPODEAL_SDK_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:amazon:$APP_APPODEAL_ADAPTER_AMAZON_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:applovin:$APP_APPODEAL_ADAPTER_APPLOVIN_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:bigo_ads:$APP_APPODEAL_ADAPTER_BIGO_ADS_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:dt_exchange:$APP_APPODEAL_ADAPTER_DT_EXCHANGE_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:inmobi:$APP_APPODEAL_ADAPTER_INMOBI_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:ironsource:$APP_APPODEAL_ADAPTER_IRONSOURCE_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:mintegral:$APP_APPODEAL_ADAPTER_MINTEGRAL_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:my_target:$APP_APPODEAL_ADAPTER_MY_TARGET_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:unity_ads:$APP_APPODEAL_ADAPTER_UNITYADS_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:vungle:$APP_APPODEAL_ADAPTER_VUNGLE_VERSION"
-    implementation "com.appodeal.ads.sdk.adapters:yandex:$APP_APPODEAL_ADAPTER_YANDEX_VERSION"
+    // Appodeal core SDK — includes built-in VAST/MRAID renderers
+    implementation "com.appodeal.ads.sdk:core:4.0.0"
+
+    // NOTE: "networks:appodeal", "networks:mraid", "networks:vast" are REMOVED.
+    // These are built into core:4.0.0 and declaring them as separate network
+    // dependencies causes LinkageError / ClassNotFoundException at runtime
+    // because the classes moved into core but the old network JARs reference
+    // stale package paths.
+
+    // IAB (in-app bidding support, required by BidMachine)
+    implementation "com.appodeal.ads.sdk.adapters:iab:1.8.1.0"
+
+    // Mediation adapters — only keep stable ones for initial testing.
+    // Uncomment more as needed after rewarded ads work without crash.
+    implementation "com.appodeal.ads.sdk.adapters:bidmachine:3.5.0.0"
+    implementation "com.appodeal.ads.sdk.adapters:applovin:13.5.1.0"
+    implementation "com.appodeal.ads.sdk.adapters:unity_ads:4.16.4.0"
+    implementation "com.appodeal.ads.sdk.adapters:vungle:7.6.1.0"
+    implementation "com.appodeal.ads.sdk.adapters:yandex:7.18.2.0"
+
+    // --- TEMPORARILY DISABLED for safe-mode testing ---
+    // implementation "com.appodeal.ads.sdk.adapters:amazon:11.1.1.0"
+    // implementation "com.appodeal.ads.sdk.adapters:bigo_ads:5.6.2.0"
+    // implementation "com.appodeal.ads.sdk.adapters:dt_exchange:8.4.1.0"
+    // implementation "com.appodeal.ads.sdk.adapters:inmobi:11.1.0.0"
+    // implementation "com.appodeal.ads.sdk.adapters:ironsource:9.1.0.0"
+    // implementation "com.appodeal.ads.sdk.adapters:mintegral:17.0.31.0"
+    // implementation "com.appodeal.ads.sdk.adapters:my_target:5.27.4.0"
 }

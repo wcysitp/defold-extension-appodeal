@@ -1,14 +1,59 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.wcysitp.defold.appodeal"
     xmlns:tools="http://schemas.android.com/tools">
 
     <application
-        android:networkSecurityConfig="@xml/defold_appodeal_network_security_config"
-        tools:replace="android:networkSecurityConfig">
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic">
         <!--
-            Optional if you use the AdMob adapter:
-            <meta-data
-                android:name="com.google.android.gms.ads.APPLICATION_ID"
-                android:value="ca-app-pub-XXXXXXXXXXXXXXXX~YYYYYYYYYY" />
+            Required by Google's UMP (used by Appodeal consent flow).
+            Replace with your real AdMob App ID for production builds.
         -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-3940256099942544~3347511713" />
+
+        <!--
+            VastActivity: The VAST video player activity used by Appodeal's
+            built-in video renderer. Key changes to prevent SIGSEGV:
+            1. launchMode="singleTask" — forces it into its own task so that
+               DefoldActivity's Surface is NOT destroyed on the same task stack.
+               This prevents BLASTBufferQueue use-after-free in render thread.
+            2. theme=Translucent.NoTitleBar.Fullscreen — provides its own
+               window decor independent of the game's GL surface.
+            3. hardwareAccelerated=true — required for video playback.
+            4. Extended configChanges — prevents Activity recreation.
+        -->
+        <activity
+            android:name="com.explorestack.iab.vast.activity.VastActivity"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen"
+            android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density"
+            android:hardwareAccelerated="true"
+            android:excludeFromRecents="true"
+            tools:replace="android:configChanges,android:hardwareAccelerated,android:launchMode,android:theme" />
+
+        <!--
+            MraidActivity: Similar treatment for MRAID-based ads.
+        -->
+        <activity
+            android:name="com.explorestack.iab.mraid.MraidActivity"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen"
+            android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density"
+            android:hardwareAccelerated="true"
+            android:excludeFromRecents="true"
+            tools:replace="android:configChanges,android:hardwareAccelerated,android:launchMode,android:theme" />
+
+        <!--
+            BidMachine fullscreen activity — also needs safe config to
+            avoid surface lifecycle issues.
+        -->
+        <activity
+            android:name="io.bidmachine.rendering.ad.fullscreen.FullScreenActivity"
+            android:hardwareAccelerated="@bool/bm_is_hardware_accelerated"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen"
+            android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density"
+            tools:replace="android:hardwareAccelerated,android:theme,android:configChanges" />
     </application>
 </manifest>

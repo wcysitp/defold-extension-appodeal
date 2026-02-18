@@ -9,6 +9,7 @@
 #include <mutex>
 
 #if defined(DM_PLATFORM_ANDROID)
+#include <dmsdk/graphics/graphics_native.h>
 #include <jni.h>
 #endif
 
@@ -34,6 +35,14 @@ namespace
         std::string m_Currency;
     };
 
+    struct PendingRewardResult
+    {
+        bool m_HasResult;
+        bool m_Success;
+        double m_Amount;
+        std::string m_Currency;
+    };
+
     struct AppodealContext
     {
         dmScript::LuaCallbackInfo* m_InitCallback;
@@ -41,6 +50,9 @@ namespace
         dmScript::LuaCallbackInfo* m_RewardedCallback;
         std::queue<CallbackEvent> m_Events;
         std::mutex m_EventsMutex;
+
+        PendingRewardResult m_PendingReward;
+        std::mutex m_PendingRewardMutex;
 
 #if defined(DM_PLATFORM_ANDROID)
         struct Jni
@@ -122,8 +134,6 @@ namespace
             return;
 
         lua_State* L = dmScript::GetCallbackLuaContext(callback);
-        DM_LUA_STACK_CHECK(L, 0);
-
         if (dmScript::SetupCallback(callback) != 0)
         {
             dmLogError("Failed to setup callback");
@@ -132,13 +142,12 @@ namespace
 
         PushEventTable(L, event);
         int ret = dmScript::PCall(L, 1, 0);
-        dmScript::TeardownCallback(callback);
-
         if (ret != 0)
         {
             dmLogError("Callback execution failed: %s", lua_tostring(L, -1));
             lua_pop(L, 1);
         }
+        dmScript::TeardownCallback(callback);
     }
 
     static bool IsInterstitialTerminal(const std::string& event)
@@ -170,15 +179,47 @@ namespace
         {
             callback = &g_Appodeal.m_RewardedCallback;
             destroy = IsRewardedTerminal(event.m_Event);
+
+            // Save reward/closed result to pending state as fallback.
+            // Even if the Lua callback is stale after pause/resume,
+            // poll_rewarded_result() will pick it up.
+            if (event.m_Event == "reward" || event.m_Event == "closed")
+            {
+                bool is_success = false;
+                if (event.m_Event == "reward")
+                {
+                    is_success = true;
+                }
+                else if (event.m_Event == "closed")
+                {
+                    is_success = event.m_Rewarded;
+                }
+
+                if (is_success)
+                {
+                    std::lock_guard<std::mutex> lock(g_Appodeal.m_PendingRewardMutex);
+                    g_Appodeal.m_PendingReward.m_HasResult = true;
+                    g_Appodeal.m_PendingReward.m_Success = true;
+                    g_Appodeal.m_PendingReward.m_Amount = event.m_Amount;
+                    g_Appodeal.m_PendingReward.m_Currency = event.m_Currency;
+                    dmLogInfo("Pending reward saved: amount=%.1f", event.m_Amount);
+                }
+            }
         }
 
         if (callback != 0x0 && *callback != 0x0)
         {
+            dmLogInfo("DispatchEvent: invoking callback for channel=%d event=%s", event.m_Channel, event.m_Event.c_str());
             InvokeCallback(*callback, event);
             if (destroy)
             {
                 DestroyCallback(callback);
             }
+        }
+        else
+        {
+            dmLogWarning("DispatchEvent: NO callback for channel=%d event=%s (callback_ptr=%p)",
+                event.m_Channel, event.m_Event.c_str(), callback ? (void*)*callback : (void*)0x0);
         }
     }
 
@@ -237,7 +278,7 @@ namespace
             jint get_env_result = vm->GetEnv((void**)&m_Env, JNI_VERSION_1_6);
             if (get_env_result == JNI_EDETACHED)
             {
-                if (vm->AttachCurrentThread((void**)&m_Env, 0) != JNI_OK)
+                if (vm->AttachCurrentThread(&m_Env, 0) != JNI_OK)
                 {
                     dmLogError("Failed to attach current thread to JVM");
                     return false;
@@ -677,6 +718,40 @@ namespace
         return 0;
     }
 
+    // Poll for a pending rewarded result.
+    // Returns nil if no result, or {success=true, amount=N, currency="..."}
+    static int LuaPollRewardedResult(lua_State* L)
+    {
+        DM_LUA_STACK_CHECK(L, 1);
+
+        PendingRewardResult result;
+        {
+            std::lock_guard<std::mutex> lock(g_Appodeal.m_PendingRewardMutex);
+            result = g_Appodeal.m_PendingReward;
+            // Consume the result
+            g_Appodeal.m_PendingReward.m_HasResult = false;
+        }
+
+        if (!result.m_HasResult)
+        {
+            lua_pushnil(L);
+            return 1;
+        }
+
+        lua_newtable(L);
+        lua_pushboolean(L, result.m_Success ? 1 : 0);
+        lua_setfield(L, -2, "success");
+        lua_pushnumber(L, result.m_Amount);
+        lua_setfield(L, -2, "amount");
+        if (!result.m_Currency.empty())
+        {
+            lua_pushstring(L, result.m_Currency.c_str());
+            lua_setfield(L, -2, "currency");
+        }
+
+        return 1;
+    }
+
     static const luaL_reg Module_methods[] =
     {
         {"init", LuaInit},
@@ -684,6 +759,7 @@ namespace
         {"show_interstitial", LuaShowInterstitial},
         {"is_rewarded_available", LuaIsRewardedAvailable},
         {"show_rewarded", LuaShowRewarded},
+        {"poll_rewarded_result", LuaPollRewardedResult},
         {0, 0}
     };
 
@@ -699,6 +775,9 @@ namespace
         g_Appodeal.m_InitCallback = 0x0;
         g_Appodeal.m_InterstitialCallback = 0x0;
         g_Appodeal.m_RewardedCallback = 0x0;
+        g_Appodeal.m_PendingReward.m_HasResult = false;
+        g_Appodeal.m_PendingReward.m_Success = false;
+        g_Appodeal.m_PendingReward.m_Amount = 0.0;
         return dmExtension::RESULT_OK;
     }
 
