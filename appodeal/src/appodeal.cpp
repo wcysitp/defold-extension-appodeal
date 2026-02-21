@@ -7,6 +7,7 @@
 #include <queue>
 #include <string>
 #include <mutex>
+#include <stdint.h>
 
 #if defined(DM_PLATFORM_ANDROID)
 #include <dmsdk/graphics/graphics_native.h>
@@ -33,6 +34,7 @@ namespace
         bool m_Rewarded;
         double m_Amount;
         std::string m_Currency;
+        uint32_t m_RetryCount = 0;
     };
 
     struct PendingRewardResult
@@ -64,6 +66,7 @@ namespace
             jmethodID m_ShowInterstitial;
             jmethodID m_IsRewardedAvailable;
             jmethodID m_ShowRewarded;
+            jmethodID m_ShowConsentForm;
         } m_Jni;
 #endif
     };
@@ -128,16 +131,16 @@ namespace
         }
     }
 
-    static void InvokeCallback(dmScript::LuaCallbackInfo* callback, const CallbackEvent& event)
+    static bool InvokeCallback(dmScript::LuaCallbackInfo* callback, const CallbackEvent& event)
     {
         if (callback == 0x0)
-            return;
+            return false;
 
         lua_State* L = dmScript::GetCallbackLuaContext(callback);
         if (dmScript::SetupCallback(callback) != 0)
         {
             dmLogError("Failed to setup callback");
-            return;
+            return false;
         }
 
         PushEventTable(L, event);
@@ -148,6 +151,7 @@ namespace
             lua_pop(L, 1);
         }
         dmScript::TeardownCallback(callback);
+        return true;
     }
 
     static bool IsInterstitialTerminal(const std::string& event)
@@ -210,7 +214,32 @@ namespace
         if (callback != 0x0 && *callback != 0x0)
         {
             dmLogInfo("DispatchEvent: invoking callback for channel=%d event=%s", event.m_Channel, event.m_Event.c_str());
-            InvokeCallback(*callback, event);
+            bool invoked = InvokeCallback(*callback, event);
+            if (!invoked)
+            {
+                if (event.m_Channel == EVENT_INIT)
+                {
+                    dmLogWarning("DispatchEvent: dropping init callback after setup failure");
+                    DestroyCallback(callback);
+                    return;
+                }
+
+                if (event.m_RetryCount < 120)
+                {
+                    CallbackEvent retry_event = event;
+                    retry_event.m_RetryCount = event.m_RetryCount + 1;
+                    EnqueueEvent(retry_event);
+                    dmLogWarning("DispatchEvent: callback setup failed, queued retry=%u channel=%d event=%s",
+                        retry_event.m_RetryCount, event.m_Channel, event.m_Event.c_str());
+                }
+                else
+                {
+                    dmLogError("DispatchEvent: callback setup failed permanently channel=%d event=%s",
+                        event.m_Channel, event.m_Event.c_str());
+                }
+                return;
+            }
+
             if (destroy)
             {
                 DestroyCallback(callback);
@@ -225,7 +254,13 @@ namespace
 
     static void FlushEvents()
     {
-        for (;;)
+        uint32_t events_to_process = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_Appodeal.m_EventsMutex);
+            events_to_process = (uint32_t) g_Appodeal.m_Events.size();
+        }
+
+        for (uint32_t i = 0; i < events_to_process; ++i)
         {
             CallbackEvent event;
             bool has_event = false;
@@ -382,7 +417,8 @@ namespace
             g_Appodeal.m_Jni.m_IsInterstitialAvailable != 0x0 &&
             g_Appodeal.m_Jni.m_ShowInterstitial != 0x0 &&
             g_Appodeal.m_Jni.m_IsRewardedAvailable != 0x0 &&
-            g_Appodeal.m_Jni.m_ShowRewarded != 0x0)
+            g_Appodeal.m_Jni.m_ShowRewarded != 0x0 &&
+            g_Appodeal.m_Jni.m_ShowConsentForm != 0x0)
         {
             return true;
         }
@@ -411,12 +447,14 @@ namespace
         g_Appodeal.m_Jni.m_ShowInterstitial = env->GetStaticMethodID(g_Appodeal.m_Jni.m_Class, "showInterstitial", "()Z");
         g_Appodeal.m_Jni.m_IsRewardedAvailable = env->GetStaticMethodID(g_Appodeal.m_Jni.m_Class, "isRewardedAvailable", "()Z");
         g_Appodeal.m_Jni.m_ShowRewarded = env->GetStaticMethodID(g_Appodeal.m_Jni.m_Class, "showRewarded", "()Z");
+        g_Appodeal.m_Jni.m_ShowConsentForm = env->GetStaticMethodID(g_Appodeal.m_Jni.m_Class, "showConsentForm", "()Z");
 
         if (g_Appodeal.m_Jni.m_Initialize == 0x0 ||
             g_Appodeal.m_Jni.m_IsInterstitialAvailable == 0x0 ||
             g_Appodeal.m_Jni.m_ShowInterstitial == 0x0 ||
             g_Appodeal.m_Jni.m_IsRewardedAvailable == 0x0 ||
-            g_Appodeal.m_Jni.m_ShowRewarded == 0x0)
+            g_Appodeal.m_Jni.m_ShowRewarded == 0x0 ||
+            g_Appodeal.m_Jni.m_ShowConsentForm == 0x0)
         {
             ClearJniException(env, "GetStaticMethodID");
             dmLogError("Failed to resolve one or more Java method IDs");
@@ -495,6 +533,18 @@ namespace
         JNIEnv* env = env_scope.m_Env;
         jboolean result = env->CallStaticBooleanMethod(g_Appodeal.m_Jni.m_Class, g_Appodeal.m_Jni.m_ShowRewarded);
         ClearJniException(env, "CallStaticBooleanMethod(showRewarded)");
+        return result == JNI_TRUE;
+    }
+
+    static bool JavaShowConsentForm()
+    {
+        JniEnvScope env_scope;
+        if (!env_scope.Attach() || !EnsureJniReady(env_scope.m_Env))
+            return false;
+
+        JNIEnv* env = env_scope.m_Env;
+        jboolean result = env->CallStaticBooleanMethod(g_Appodeal.m_Jni.m_Class, g_Appodeal.m_Jni.m_ShowConsentForm);
+        ClearJniException(env, "CallStaticBooleanMethod(showConsentForm)");
         return result == JNI_TRUE;
     }
 
@@ -718,6 +768,16 @@ namespace
         return 0;
     }
 
+    static int LuaShowConsentForm(lua_State* L)
+    {
+        DM_LUA_STACK_CHECK(L, 0);
+
+#if defined(DM_PLATFORM_ANDROID)
+        JavaShowConsentForm();
+#endif
+        return 0;
+    }
+
     // Poll for a pending rewarded result.
     // Returns nil if no result, or {success=true, amount=N, currency="..."}
     static int LuaPollRewardedResult(lua_State* L)
@@ -760,6 +820,7 @@ namespace
         {"is_rewarded_available", LuaIsRewardedAvailable},
         {"show_rewarded", LuaShowRewarded},
         {"poll_rewarded_result", LuaPollRewardedResult},
+        {"show_consent_form", LuaShowConsentForm},
         {0, 0}
     };
 

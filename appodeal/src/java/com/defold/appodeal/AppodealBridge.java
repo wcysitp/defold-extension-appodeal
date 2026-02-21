@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.res.AssetManager;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import com.appodeal.ads.Appodeal;
 import com.appodeal.ads.InterstitialCallbacks;
@@ -23,14 +24,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class AppodealBridge {
     private static final String TAG = "DefoldAppodeal";
     private static final int AD_TYPES = Appodeal.INTERSTITIAL | Appodeal.REWARDED_VIDEO;
     private static final int INIT_RETRY_DELAY_MS = 100;
     private static final int INIT_RETRY_MAX_ATTEMPTS = 50;
-    private static final int INIT_CALLBACK_TIMEOUT_MS = 15000;
     private static final int CONSENT_UPDATE_TIMEOUT_MS = 5000;
+    private static final int CONSENT_FORM_RETRY_DELAY_MS = 350;
+    private static final int CONSENT_FORM_MAX_ATTEMPTS = 30;
+    private static final int CONSENT_NO_CALLBACK_TIMEOUT_MS = 5000;
+    private static final int CONSENT_MIN_ACTIVITY_STABLE_MS = 350;
     private static final int CACHE_RETRY_DELAY_MS = 3000;
     /**
      * Delay before calling Appodeal.show() to give Defold engine's render
@@ -44,11 +49,18 @@ public final class AppodealBridge {
     private static final AtomicBoolean sInitCallbackSent = new AtomicBoolean(false);
     private static final AtomicBoolean sConsentApiLogged = new AtomicBoolean(false);
     private static final AtomicBoolean sConsentInfoUpdated = new AtomicBoolean(false);
+    private static final AtomicBoolean sConsentUpdateFinished = new AtomicBoolean(false);
+    private static final AtomicBoolean sConsentUpdateInFlight = new AtomicBoolean(false);
     private static final AtomicBoolean sAdaptersProbeLogged = new AtomicBoolean(false);
     private static volatile String sLastAppKey = null;
     private static volatile boolean sRewardedShownFired = false;
     private static volatile boolean sRewardedFinishedFired = false;
     private static volatile boolean sTestMode = false;
+    private static volatile long sInitStartedAtMs = 0L;
+    private static volatile long sConsentRequestStartedAtMs = 0L;
+    private static final AtomicBoolean sShowConsentRequested = new AtomicBoolean(false);
+    private static final AtomicBoolean sConsentFormInFlight = new AtomicBoolean(false);
+    private static final AtomicInteger sConsentAttemptGeneration = new AtomicInteger(0);
 
     private AppodealBridge() {
     }
@@ -61,7 +73,14 @@ public final class AppodealBridge {
         }
 
         sLastAppKey = appKey;
+        sInitStartedAtMs = SystemClock.elapsedRealtime();
         sConsentInfoUpdated.set(false);
+        sConsentUpdateFinished.set(false);
+        sConsentUpdateInFlight.set(false);
+        sShowConsentRequested.set(false);
+        sConsentFormInFlight.set(false);
+        sConsentRequestStartedAtMs = 0L;
+        sConsentAttemptGeneration.incrementAndGet();
         sInitCallbackSent.set(false);
         scheduleInitialize(appKey, testing, logLevel, 0);
         return true;
@@ -99,14 +118,9 @@ public final class AppodealBridge {
                     sTestMode = testing;
                     configureAutoCache();
                     logAdapterProbeOnce(activity);
-                    preconfigureConsentState(activity);
-
-                    requestConsentInfoUpdate(activity, appKey, new Runnable() {
-                        @Override
-                        public void run() {
-                            performInitializeCall(activity, appKey);
-                        }
-                    });
+                    performInitializeCall(activity, appKey);
+                    // Consent info refresh should never block SDK initialization.
+                    requestConsentInfoUpdate(activity, appKey, null);
                 } catch (Throwable throwable) {
                     Log.e(TAG, "initialize failed with exception", throwable);
                     notifyInitOnce(false, throwable.getClass().getSimpleName() + ":" + throwable.getMessage());
@@ -142,22 +156,6 @@ public final class AppodealBridge {
             @Override
             public void run() {
                 try {
-                    if (!isConsentReadyForAds()) {
-                        Log.w(TAG, "showInterstitial: refreshing consent before show");
-                        requestConsentInfoUpdate(activity, sLastAppKey, new Runnable() {
-                            @Override
-                            public void run() {
-                                runOnUiThread(activity, new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        attemptShowInterstitial(activity);
-                                    }
-                                });
-                            }
-                        });
-                        return;
-                    }
-
                     attemptShowInterstitial(activity);
                 } catch (Throwable throwable) {
                     Log.e(TAG, "showInterstitial failed with exception", throwable);
@@ -194,22 +192,6 @@ public final class AppodealBridge {
             @Override
             public void run() {
                 try {
-                    if (!isConsentReadyForAds()) {
-                        Log.w(TAG, "showRewarded: refreshing consent before show");
-                        requestConsentInfoUpdate(activity, sLastAppKey, new Runnable() {
-                            @Override
-                            public void run() {
-                                runOnUiThread(activity, new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        attemptShowRewarded(activity);
-                                    }
-                                });
-                            }
-                        });
-                        return;
-                    }
-
                     attemptShowRewarded(activity);
                 } catch (Throwable throwable) {
                     Log.e(TAG, "showRewarded failed with exception", throwable);
@@ -228,15 +210,400 @@ public final class AppodealBridge {
         return true;
     }
 
+    public static boolean showConsentForm() {
+        Log.i(TAG, "showConsentForm called");
+        sShowConsentRequested.set(true);
+
+        final Activity activity = getActivity();
+        if (activity == null) {
+            Log.e(TAG, "showConsentForm: activity_is_null");
+            return false;
+        }
+
+        final int generation = sConsentAttemptGeneration.incrementAndGet();
+        scheduleConsentFormAttempt(activity, 0, generation);
+
+        return true;
+    }
+
+    private static void scheduleConsentFormAttempt(final Activity activity, final int attempt, final int generation) {
+        runOnUiThread(activity, new Runnable() {
+            @Override
+            public void run() {
+                if (generation != sConsentAttemptGeneration.get()) {
+                    return;
+                }
+
+                if (!sShowConsentRequested.get()) {
+                    return;
+                }
+
+                if (activity.isFinishing() || activity.isDestroyed()) {
+                    Log.w(TAG, "showConsentForm aborted: activity_gone");
+                    sShowConsentRequested.set(false);
+                    sConsentFormInFlight.set(false);
+                    return;
+                }
+
+                if (!activity.hasWindowFocus()) {
+                    if (sConsentFormInFlight.get()) {
+                        if (attempt == 0 || attempt % 8 == 0) {
+                            Log.i(TAG, "showConsentForm pending: activity lost focus while form in flight");
+                        }
+                        MAIN_HANDLER.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                scheduleConsentFormAttempt(activity, attempt, generation);
+                            }
+                        }, CONSENT_FORM_RETRY_DELAY_MS);
+                        return;
+                    }
+
+                    if (attempt == 0 || attempt % 4 == 0) {
+                        Log.i(TAG, "showConsentForm wait: activity has no window focus, attempt=" + attempt);
+                    }
+                    if (attempt >= CONSENT_FORM_MAX_ATTEMPTS) {
+                        Log.w(TAG, "showConsentForm give up: no activity focus");
+                        sShowConsentRequested.set(false);
+                        sConsentFormInFlight.set(false);
+                        return;
+                    }
+                    MAIN_HANDLER.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            scheduleConsentFormAttempt(activity, attempt + 1, generation);
+                        }
+                    }, CONSENT_FORM_RETRY_DELAY_MS);
+                    return;
+                }
+
+                if (sInitStartedAtMs > 0L) {
+                    long sinceInitMs = SystemClock.elapsedRealtime() - sInitStartedAtMs;
+                    if (sinceInitMs < CONSENT_MIN_ACTIVITY_STABLE_MS) {
+                        if (attempt == 0) {
+                            Log.i(TAG, "showConsentForm wait: startup stabilization " + sinceInitMs + "ms");
+                        }
+                        MAIN_HANDLER.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                scheduleConsentFormAttempt(activity, attempt + 1, generation);
+                            }
+                        }, CONSENT_FORM_RETRY_DELAY_MS);
+                        return;
+                    }
+                }
+
+                // Fast-path: try a single immediate show before consent update completes.
+                // If SDK has cached consent info, this avoids waiting several seconds for
+                // requestConsentInfoUpdate(). On FormCacheError we fall back to normal flow.
+                if (!sConsentUpdateFinished.get() && attempt == 0 && !sConsentFormInFlight.get()) {
+                    Object status = getConsentStatus();
+                    Boolean canShowAds = canShowAdsByConsent();
+                    Log.i(TAG, "showConsentForm fast-path before consent update"
+                        + ", status=" + status
+                        + ", canShowAds=" + canShowAds);
+                    if (invokeConsentFormNow(activity, attempt, generation)) {
+                        return;
+                    }
+                }
+
+                if (!sConsentUpdateFinished.get()) {
+                    if (attempt == 0 || attempt % 4 == 0) {
+                        Log.i(TAG, "showConsentForm wait: consent update not finished, attempt=" + attempt);
+                    }
+
+                    if (!sConsentUpdateInFlight.get()
+                        && sLastAppKey != null
+                        && !sLastAppKey.trim().isEmpty()) {
+                        requestConsentInfoUpdate(activity, sLastAppKey, null);
+                    }
+
+                    MAIN_HANDLER.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            scheduleConsentFormAttempt(activity, attempt + 1, generation);
+                        }
+                    }, CONSENT_FORM_RETRY_DELAY_MS);
+                    return;
+                }
+
+                if (!isConsentInfoReadyForForm()) {
+                    if (attempt == 0 || attempt % 4 == 0) {
+                        Log.i(TAG, "showConsentForm wait: consent state not ready, attempt=" + attempt);
+                    }
+
+                    if (attempt >= CONSENT_FORM_MAX_ATTEMPTS) {
+                        Log.w(TAG, "showConsentForm give up: consent state still not ready");
+                        sShowConsentRequested.set(false);
+                        sConsentFormInFlight.set(false);
+                        return;
+                    }
+
+                    if (!sConsentUpdateInFlight.get()
+                        && sLastAppKey != null
+                        && !sLastAppKey.trim().isEmpty()) {
+                        requestConsentInfoUpdate(activity, sLastAppKey, null);
+                    }
+
+                    MAIN_HANDLER.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            scheduleConsentFormAttempt(activity, attempt + 1, generation);
+                        }
+                    }, CONSENT_FORM_RETRY_DELAY_MS);
+                    return;
+                }
+
+                if (sConsentFormInFlight.get()) {
+                    if (attempt == 0 || attempt % 4 == 0) {
+                        Log.i(TAG, "showConsentForm wait: request already in flight, attempt=" + attempt);
+                    }
+
+                    MAIN_HANDLER.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            scheduleConsentFormAttempt(activity, attempt + 1, generation);
+                        }
+                    }, CONSENT_FORM_RETRY_DELAY_MS);
+                    return;
+                }
+
+                if (attempt == 0 || attempt % 4 == 0) {
+                    Object status = getConsentStatus();
+                    Boolean canShowAds = canShowAdsByConsent();
+                    Log.i(TAG, "showConsentForm try: attempt=" + attempt
+                        + ", status=" + status
+                        + ", canShowAds=" + canShowAds
+                        + ", consentUpdated=" + sConsentInfoUpdated.get()
+                        + ", updateFinished=" + sConsentUpdateFinished.get());
+                }
+
+                if (invokeConsentFormNow(activity, attempt, generation)) {
+                    return;
+                }
+
+                if (attempt >= CONSENT_FORM_MAX_ATTEMPTS) {
+                    Log.w(TAG, "showConsentForm give up: API invocation failed");
+                    sShowConsentRequested.set(false);
+                    sConsentFormInFlight.set(false);
+                    return;
+                }
+
+                MAIN_HANDLER.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        scheduleConsentFormAttempt(activity, attempt + 1, generation);
+                    }
+                }, CONSENT_FORM_RETRY_DELAY_MS);
+            }
+        });
+    }
+
+    private static boolean isConsentInfoReadyForForm() {
+        if (sConsentInfoUpdated.get()) {
+            return true;
+        }
+
+        Object status = getConsentStatus();
+        if (status != null) {
+            String text = String.valueOf(status);
+            if (text != null) {
+                String normalized = text.trim().toLowerCase(Locale.US);
+                if (!normalized.isEmpty()
+                    && !"unknown".equals(normalized)
+                    && !"null".equals(normalized)) {
+                    return true;
+                }
+            }
+        }
+
+        Boolean canShow = canShowAdsByConsent();
+        // `false` here often means "consent state is not ready yet" during startup.
+        // Treat only explicit true as readiness fallback to avoid FormCacheError.
+        return Boolean.TRUE.equals(canShow);
+    }
+
+    private static boolean invokeConsentFormNow(final Activity activity, final int attempt, final int generation) {
+        try {
+            Class<?> consentManagerClass = Class.forName("com.appodeal.consent.ConsentManager");
+            Method activityShowMethod = null;
+            Method contextShowMethod = null;
+            for (Method method : consentManagerClass.getMethods()) {
+                if (!"loadAndShowConsentFormIfRequired".equals(method.getName()) || !Modifier.isStatic(method.getModifiers())) {
+                    continue;
+                }
+                Class<?>[] params = method.getParameterTypes();
+                if (params.length != 2 || !params[1].isInterface()) {
+                    continue;
+                }
+                Class<?> firstParam = params[0];
+                if (Activity.class.isAssignableFrom(firstParam)) {
+                    activityShowMethod = method;
+                    break;
+                }
+                if (Context.class.isAssignableFrom(firstParam) && contextShowMethod == null) {
+                    contextShowMethod = method;
+                }
+            }
+            Method showMethod = activityShowMethod != null ? activityShowMethod : contextShowMethod;
+
+            if (showMethod == null) {
+                Log.w(TAG, "showConsentForm: API unavailable");
+                return false;
+            }
+
+            sConsentFormInFlight.set(true);
+            sConsentRequestStartedAtMs = SystemClock.elapsedRealtime();
+            final AtomicBoolean callbackCalled = new AtomicBoolean(false);
+            Class<?> listenerType = showMethod.getParameterTypes()[1];
+            Object listener = Proxy.newProxyInstance(
+                listenerType.getClassLoader(),
+                new Class<?>[] { listenerType },
+                new InvocationHandler() {
+                    @Override
+                    public Object invoke(Object proxy, Method method, Object[] args) {
+                        if (generation != sConsentAttemptGeneration.get()) {
+                            return getDefaultReturnValue(method != null ? method.getReturnType() : null);
+                        }
+
+                        callbackCalled.set(true);
+                        String name = method != null ? method.getName() : "unknown";
+                        String callbackDetail = "";
+                        if (args != null && args.length > 0 && args[0] != null) {
+                            callbackDetail = String.valueOf(args[0]);
+                        }
+                        Log.i(TAG, "showConsentForm callback: " + name);
+                        if (!callbackDetail.isEmpty()) {
+                            Log.i(TAG, "showConsentForm callback detail: " + callbackDetail);
+                        }
+
+                        String normalized = name.toLowerCase(Locale.US);
+                        String detailNormalized = callbackDetail.toLowerCase(Locale.US);
+                        boolean isError = normalized.contains("error") || normalized.contains("failed");
+                        boolean isDismiss = normalized.contains("dismiss") || normalized.contains("close");
+                        boolean isOpened = normalized.contains("open") || normalized.contains("show");
+                        boolean hasDismissError = detailNormalized.contains("formcacheerror")
+                            || detailNormalized.contains("consent information is null")
+                            || detailNormalized.contains("error")
+                            || detailNormalized.contains("failed");
+
+                        if (isError || hasDismissError) {
+                            sConsentFormInFlight.set(false);
+                            sConsentRequestStartedAtMs = 0L;
+                            if (attempt < CONSENT_FORM_MAX_ATTEMPTS) {
+                                Log.w(TAG, "showConsentForm callback indicates error, retrying attempt=" + (attempt + 1));
+                                if (sLastAppKey != null && !sLastAppKey.trim().isEmpty()) {
+                                    requestConsentInfoUpdate(activity, sLastAppKey, null);
+                                }
+                                MAIN_HANDLER.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        scheduleConsentFormAttempt(activity, attempt + 1, generation);
+                                    }
+                                }, CONSENT_FORM_RETRY_DELAY_MS);
+                            } else {
+                                sShowConsentRequested.set(false);
+                            }
+                        } else if (isDismiss) {
+                            sConsentFormInFlight.set(false);
+                            boolean consentReadyForDismiss = sConsentInfoUpdated.get() && sConsentUpdateFinished.get();
+                            if (!consentReadyForDismiss && attempt < CONSENT_FORM_MAX_ATTEMPTS) {
+                                Log.w(TAG, "showConsentForm dismissed before consent update finished"
+                                    + " (updated=" + sConsentInfoUpdated.get()
+                                    + ", finished=" + sConsentUpdateFinished.get()
+                                    + "), retrying attempt=" + (attempt + 1));
+                                if (sLastAppKey != null && !sLastAppKey.trim().isEmpty()) {
+                                    requestConsentInfoUpdate(activity, sLastAppKey, null);
+                                }
+                                MAIN_HANDLER.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        scheduleConsentFormAttempt(activity, attempt + 1, generation);
+                                    }
+                                }, CONSENT_FORM_RETRY_DELAY_MS);
+                            } else {
+                                sConsentRequestStartedAtMs = 0L;
+                                sShowConsentRequested.set(false);
+                            }
+                        } else if (isOpened) {
+                            // Keep requested=true until form closes/dismisses.
+                        }
+
+                        return getDefaultReturnValue(method != null ? method.getReturnType() : null);
+                    }
+                }
+            );
+
+            showMethod.invoke(null, activity, listener);
+            Log.i(TAG, "showConsentForm: request sent");
+
+            MAIN_HANDLER.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (generation != sConsentAttemptGeneration.get()) {
+                        return;
+                    }
+
+                    if (!sShowConsentRequested.get()) {
+                        return;
+                    }
+                    if (callbackCalled.get()) {
+                        return;
+                    }
+                    if (!sConsentFormInFlight.get()) {
+                        return;
+                    }
+
+                    if (!activity.hasWindowFocus()) {
+                        if (activity.isFinishing() || activity.isDestroyed()) {
+                            sShowConsentRequested.set(false);
+                            sConsentFormInFlight.set(false);
+                            sConsentRequestStartedAtMs = 0L;
+                            return;
+                        }
+
+                        long startedAt = sConsentRequestStartedAtMs;
+                        long pendingMs = startedAt > 0L ? (SystemClock.elapsedRealtime() - startedAt) : 0L;
+                        if (pendingMs > 30000L) {
+                            Log.w(TAG, "showConsentForm give up: pending without callback for " + pendingMs + "ms");
+                            sShowConsentRequested.set(false);
+                            sConsentFormInFlight.set(false);
+                            sConsentRequestStartedAtMs = 0L;
+                            return;
+                        }
+
+                        // Most likely consent form (or another overlay) is on top.
+                        Log.i(TAG, "showConsentForm pending: activity lost focus, waiting");
+                        MAIN_HANDLER.postDelayed(this, CONSENT_FORM_RETRY_DELAY_MS);
+                        return;
+                    }
+
+                    if (attempt >= CONSENT_FORM_MAX_ATTEMPTS) {
+                        Log.w(TAG, "showConsentForm give up: no callback");
+                        sShowConsentRequested.set(false);
+                        sConsentFormInFlight.set(false);
+                        sConsentRequestStartedAtMs = 0L;
+                        return;
+                    }
+                    Log.w(TAG, "showConsentForm no callback while focused, retrying");
+                    sConsentFormInFlight.set(false);
+                    sConsentRequestStartedAtMs = 0L;
+                    scheduleConsentFormAttempt(activity, attempt + 1, generation);
+                }
+            }, CONSENT_NO_CALLBACK_TIMEOUT_MS);
+
+            return true;
+        } catch (Throwable throwable) {
+            Log.w(TAG, "showConsentForm failed: " + throwable.getClass().getSimpleName() + ":" + throwable.getMessage());
+            sConsentFormInFlight.set(false);
+            sConsentRequestStartedAtMs = 0L;
+            return false;
+        }
+    }
+
     private static void attemptShowInterstitial(final Activity activity) {
         if (activity == null) {
             nativeOnInterstitialEvent("show_failed", false, "activity_is_null");
-            return;
-        }
-
-        if (!isConsentReadyForAds()) {
-            Log.w(TAG, "showInterstitial blocked: consent_not_ready");
-            nativeOnInterstitialEvent("show_failed", false, "consent_not_ready");
             return;
         }
 
@@ -275,12 +642,6 @@ public final class AppodealBridge {
             return;
         }
 
-        if (!isConsentReadyForAds()) {
-            Log.w(TAG, "showRewarded blocked: consent_not_ready");
-            nativeOnRewardedEvent("show_failed", false, "consent_not_ready", false, 0.0d, null);
-            return;
-        }
-
         boolean canShow = Appodeal.canShow(Appodeal.REWARDED_VIDEO);
         if (canShow) {
             Log.i(TAG, "showRewarded: canShow=true, scheduling with " + SHOW_DELAY_MS + "ms delay");
@@ -316,24 +677,10 @@ public final class AppodealBridge {
 
             InitCallResult initCallResult = callInitialize(activity, appKey);
             Log.i(TAG, "initialize success");
+            notifyInitOnce(true, null);
             warmUpCacheNow("initialize_success");
             if (initCallResult.waitForCallback) {
-                MAIN_HANDLER.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (!sInitCallbackSent.get()) {
-                            if (!isConsentReadyForAds()) {
-                                Log.w(TAG, "initialize callback timeout while consent is pending");
-                                notifyInitOnce(true, "init_deferred_by_consent");
-                            } else {
-                                Log.e(TAG, "initialize callback timeout");
-                                notifyInitOnce(false, "init_callback_timeout");
-                            }
-                        }
-                    }
-                }, INIT_CALLBACK_TIMEOUT_MS);
-            } else {
-                notifyInitOnce(true, null);
+                Log.i(TAG, "initialize callback will be treated as informational");
             }
         } catch (Throwable throwable) {
             Log.e(TAG, "initialize failed with exception", throwable);
@@ -343,6 +690,13 @@ public final class AppodealBridge {
 
     private static void requestConsentInfoUpdate(Activity activity, String appKey, final Runnable onComplete) {
         if (activity == null || appKey == null || appKey.trim().isEmpty()) {
+            if (onComplete != null) {
+                runOnMainThread(onComplete);
+            }
+            return;
+        }
+
+        if (!sConsentUpdateInFlight.compareAndSet(false, true)) {
             if (onComplete != null) {
                 runOnMainThread(onComplete);
             }
@@ -365,9 +719,15 @@ public final class AppodealBridge {
                         return;
                     }
 
+                    sConsentUpdateInFlight.set(false);
+                    sConsentUpdateFinished.set(true);
                     logConsentState("after_consent_update");
                     if (onComplete != null) {
                         runOnMainThread(onComplete);
+                    }
+                    if (sShowConsentRequested.get()) {
+                        Log.i(TAG, "executing deferred showConsentForm after consent info update");
+                        showConsentForm();
                     }
                 }
             };
@@ -392,12 +752,7 @@ public final class AppodealBridge {
             MAIN_HANDLER.postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    if (completed.compareAndSet(false, true)) {
-                        Log.w(TAG, "consent update timeout");
-                        if (onComplete != null) {
-                            runOnMainThread(onComplete);
-                        }
-                    }
+                    finish.run();
                 }
             }, CONSENT_UPDATE_TIMEOUT_MS);
 
@@ -405,6 +760,8 @@ public final class AppodealBridge {
             Log.i(TAG, "consent update requested");
         } catch (Throwable throwable) {
             Log.w(TAG, "consent update skipped: " + throwable.getClass().getSimpleName());
+            sConsentUpdateInFlight.set(false);
+            sConsentUpdateFinished.set(true);
             if (onComplete != null) {
                 runOnMainThread(onComplete);
             }
@@ -483,19 +840,33 @@ public final class AppodealBridge {
             @Override
             public Object invoke(Object proxy, Method method, Object[] args) {
                 String methodName = method != null ? method.getName() : "";
-                if ("onUpdated".equals(methodName)) {
+                if (method != null && Object.class.equals(method.getDeclaringClass())) {
+                    return getDefaultReturnValue(method.getReturnType());
+                }
+
+                String normalized = methodName.toLowerCase(Locale.US);
+                if ("onUpdated".equals(methodName)
+                    || normalized.contains("updated")
+                    || normalized.contains("success")) {
                     Log.i(TAG, "consent update callback: updated");
                     sConsentInfoUpdated.set(true);
                     if (onComplete != null) {
                         onComplete.run();
                     }
-                } else if ("onFailed".equals(methodName)) {
+                } else if ("onFailed".equals(methodName)
+                    || normalized.contains("failed")
+                    || normalized.contains("error")) {
                     String reason = "unknown";
                     if (args != null && args.length > 0 && args[0] != null) {
                         reason = String.valueOf(args[0]);
                     }
                     Log.w(TAG, "consent update callback: failed, reason=" + reason);
-                    sConsentInfoUpdated.set(false);
+                    // Do not sConsentInfoUpdated.set(false), let it stay false (or true if previously set)
+                    if (onComplete != null) {
+                        onComplete.run();
+                    }
+                } else {
+                    Log.i(TAG, "consent update callback: " + methodName);
                     if (onComplete != null) {
                         onComplete.run();
                     }
@@ -547,27 +918,6 @@ public final class AppodealBridge {
             Log.i(TAG, "consent state[" + stage + "]: status=" + status + ", canShowAds=" + canShow);
         } catch (Throwable ignored) {
         }
-    }
-
-    private static boolean isConsentReadyForAds() {
-        if (!sConsentInfoUpdated.get()) {
-            return false;
-        }
-
-        Boolean canShow = canShowAdsByConsent();
-        if (Boolean.FALSE.equals(canShow)) {
-            return false;
-        }
-
-        Object status = getConsentStatus();
-        if (status != null) {
-            String value = String.valueOf(status).toLowerCase(Locale.US);
-            if (value.contains("required") || value.contains("unknown")) {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static void configureCallbacks() {
