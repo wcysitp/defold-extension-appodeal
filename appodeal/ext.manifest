@@ -2,10 +2,11 @@ name: "Appodeal"
 
 platforms:
     android:
+        context:
+            proguard: ["manifests/android/proguard-rules.pro"]
         bundle:
             resources:
                 - "manifests/android/AndroidManifest.xml"
                 - "manifests/android/build.gradle"
-                - "manifests/android/proguard-rules.pro"
                 - "manifests/android/res"
 
